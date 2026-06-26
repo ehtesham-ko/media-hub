@@ -1,0 +1,192 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useRef, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
+import { supabase } from "@/integrations/supabase/client";
+import { createAsset } from "@/lib/assets.functions";
+import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
+import { toast } from "sonner";
+import { UploadCloud, FileImage, FileVideo, FileAudio, X } from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/upload")({
+  head: () => ({ meta: [{ title: "Upload Asset | Asset Library" }] }),
+  component: UploadPage,
+});
+
+const MAX_BYTES = 50 * 1024 * 1024;
+const NEWS_BEATS = ["Politics", "Sports", "Cinema", "Business", "Crime", "Health", "Education", "Technology", "Agriculture", "Culture"];
+
+function UploadPage() {
+  const navigate = useNavigate();
+  const { role, profileName } = useAuth();
+  const createFn = useServerFn(createAsset);
+  const [file, setFile] = useState<File | null>(null);
+  const [filePreview, setFilePreview] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({
+    title: "",
+    description: "",
+    asset_type: "Photo",
+    story_name: "",
+    news_beat: "Politics",
+    journalist_name: profileName ?? "",
+    upload_date: new Date().toISOString().slice(0, 10),
+    tags: "",
+    status: "Draft",
+    notes: "",
+  });
+
+  if (!can.upload(role)) {
+    return <p className="text-sm text-muted-foreground">You do not have permission to upload assets.</p>;
+  }
+
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const chooseFile = (f: File | null) => {
+    setFile(f);
+    setFilePreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return f && f.type.startsWith("image/") ? URL.createObjectURL(f) : null;
+    });
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) chooseFile(f);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (file && file.size > MAX_BYTES) {
+      toast.error("File exceeds the 50MB limit");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      let storage_path: string | null = null;
+      if (file) {
+        const ext = file.name.split(".").pop();
+        const path = `${crypto.randomUUID()}.${ext}`;
+        const { error: upErr } = await supabase.storage.from("assets").upload(path, file);
+        if (upErr) throw new Error(upErr.message);
+        storage_path = path;
+      }
+      await createFn({
+        data: {
+          title: form.title,
+          description: form.description || null,
+          asset_type: form.asset_type as "Photo" | "Video" | "Audio" | "Graphic",
+          story_name: form.story_name,
+          news_beat: form.news_beat,
+          journalist_name: form.journalist_name,
+          upload_date: form.upload_date,
+          tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
+          status: form.status as "Active" | "Archived" | "Draft",
+          notes: form.notes || null,
+          storage_path,
+        },
+      });
+      toast.success("Asset uploaded");
+      navigate({ to: "/assets" });
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const input = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring";
+  const fmtSize = (b: number) => `${(b / (1024 * 1024)).toFixed(2)} MB`;
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-6">
+      <div>
+        <div className="mb-2 h-1 w-16 rounded-full bg-gradient-to-r from-primary to-accent" />
+        <h1 className="font-serif text-2xl font-bold text-foreground">Upload Asset</h1>
+        <p className="text-sm text-muted-foreground">Add a new multimedia asset to the Namaste Telangana library.</p>
+      </div>
+      <form onSubmit={handleSubmit} className="animate-fade-in-up space-y-4 rounded-xl border border-border bg-card p-6">
+        <Labeled label="Title">
+          <input required className={input} value={form.title} onChange={(e) => set("title", e.target.value)} />
+        </Labeled>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Labeled label="Asset Type">
+            <select className={input} value={form.asset_type} onChange={(e) => set("asset_type", e.target.value)}>
+              {["Photo", "Video", "Audio", "Graphic"].map((t) => <option key={t}>{t}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label="Status">
+            <select className={input} value={form.status} onChange={(e) => set("status", e.target.value)}>
+              {["Draft", "Active", "Archived"].map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label="Story Name"><input required className={input} value={form.story_name} onChange={(e) => set("story_name", e.target.value)} /></Labeled>
+          <Labeled label="News Beat">
+            <select className={input} value={form.news_beat} onChange={(e) => set("news_beat", e.target.value)}>
+              {NEWS_BEATS.map((b) => <option key={b}>{b}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label="Journalist"><input required className={input} value={form.journalist_name} onChange={(e) => set("journalist_name", e.target.value)} /></Labeled>
+          <Labeled label="Upload Date"><input type="date" required className={input} value={form.upload_date} onChange={(e) => set("upload_date", e.target.value)} /></Labeled>
+        </div>
+        <Labeled label="Description"><textarea className={input} rows={3} value={form.description} onChange={(e) => set("description", e.target.value)} /></Labeled>
+        <Labeled label="Tags (comma separated)"><input className={input} value={form.tags} onChange={(e) => set("tags", e.target.value)} placeholder="election, hyderabad" /></Labeled>
+        <Labeled label="Notes"><textarea className={input} rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></Labeled>
+        <Labeled label="File (max 50MB)">
+          <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => chooseFile(e.target.files?.[0] ?? null)} />
+          {!file ? (
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl p-12 text-center transition-all duration-300 ${
+                dragging ? "dropzone-glow" : "border-2 border-dashed border-input hover:border-primary/60 hover:bg-primary/5"
+              }`}
+            >
+              <div className={`flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 ${dragging ? "pulse-ring" : ""}`}>
+                <UploadCloud className={`h-8 w-8 ${dragging ? "text-primary" : "text-muted-foreground"}`} />
+              </div>
+              <p className="text-base font-semibold text-foreground">Drop your file here</p>
+              <p className="text-sm text-muted-foreground">or click to browse</p>
+              <p className="text-xs text-muted-foreground">Photos · Videos · Audio · Graphics · up to 50MB</p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 rounded-xl border border-border p-3">
+              {filePreview ? (
+                <img src={filePreview} alt="preview" className="h-16 w-16 rounded-md object-cover" />
+              ) : (
+                <div className="flex h-16 w-16 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  {file.type.startsWith("video/") ? <FileVideo className="h-7 w-7" /> : file.type.startsWith("audio/") ? <FileAudio className="h-7 w-7" /> : <FileImage className="h-7 w-7" />}
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground">{file.name}</p>
+                <p className="text-xs text-muted-foreground">{fmtSize(file.size)}</p>
+              </div>
+              <button type="button" onClick={() => chooseFile(null)} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+        </Labeled>
+        <button type="submit" disabled={submitting} className="btn-shine flex w-full items-center justify-center gap-2 rounded-md px-4 py-3 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60">
+          <UploadCloud className="h-4 w-4" /> {submitting ? "Uploading…" : "Upload Asset"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-foreground">{label}</label>
+      {children}
+    </div>
+  );
+}

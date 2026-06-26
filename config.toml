@@ -1,0 +1,406 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { useEffect, useRef, useState } from "react";
+import { listAssets } from "@/lib/assets.functions";
+import { StatusBadge, TypeBadge, BeatBadge } from "@/components/badges";
+import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { Search, Upload, LayoutGrid, LayoutList, Image as ImageIcon, Video, Music, PenTool, X, Images, Inbox, Download, Loader2, ArrowUp, ArrowDown } from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/assets/")({
+  head: () => ({ meta: [{ title: "Assets | Asset Library" }] }),
+  validateSearch: (s: Record<string, unknown>): { tag?: string; status?: string } => ({
+    tag: typeof s.tag === "string" ? s.tag : undefined,
+    status: typeof s.status === "string" ? s.status : undefined,
+  }),
+  component: AssetsPage,
+});
+
+const TYPES = ["All", "Photo", "Video", "Audio", "Graphic"];
+const STATUSES = ["All", "Active", "Draft", "Archived"];
+const NEWS_BEATS = ["All", "Politics", "Sports", "Cinema", "Business", "Crime", "Health", "Education", "Technology", "Agriculture", "Culture"];
+
+const placeholderIcon: Record<string, { icon: typeof ImageIcon; bg: string }> = {
+  Photo: { icon: ImageIcon, bg: "bg-blue-100 text-blue-600" },
+  Video: { icon: Video, bg: "bg-purple-100 text-purple-600" },
+  Audio: { icon: Music, bg: "bg-green-100 text-green-600" },
+  Graphic: { icon: PenTool, bg: "bg-orange-100 text-orange-600" },
+};
+
+function Thumb({ url, type, size = "h-12 w-12" }: { url: string | null; type: string; size?: string }) {
+  if (url) {
+    return <img src={url} alt="" className={`${size} shrink-0 rounded-md object-cover`} />;
+  }
+  const ph = placeholderIcon[type] ?? placeholderIcon.Photo;
+  const Icon = ph.icon;
+  return (
+    <div className={`${size} flex shrink-0 items-center justify-center rounded-md ${ph.bg}`}>
+      <Icon className="h-5 w-5" />
+    </div>
+  );
+}
+
+function downloadName(title: string, path: string) {
+  const ext = path.split(".").pop();
+  const safe = title.replace(/[^a-z0-9-_ ]/gi, "_").trim() || "asset";
+  return ext && ext.length <= 5 ? `${safe}.${ext}` : safe;
+}
+
+function RowDownloadButton({ storagePath, title }: { storagePath: string | null; title: string }) {
+  const [loading, setLoading] = useState(false);
+  if (!storagePath) {
+    return (
+      <button
+        disabled
+        title="No file attached"
+        className="rounded-md p-1.5 text-muted-foreground/40"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Download className="h-4 w-4" />
+      </button>
+    );
+  }
+  const handle = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.storage.from("assets").download(storagePath);
+      if (error || !data) throw error ?? new Error("Download failed");
+      const blobUrl = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = downloadName(title, storagePath);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+      toast.success("Download started");
+    } catch (err) {
+      toast.error((err as Error).message || "Download failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <button onClick={handle} title="Download" className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary">
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+    </button>
+  );
+}
+
+function AssetsPage() {
+  const { role } = useAuth();
+  const { tag, status: statusParam } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const fn = useServerFn(listAssets);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [search, setSearch] = useState("");
+  const [assetType, setAssetType] = useState("All");
+  const [status, setStatus] = useState(statusParam ?? "All");
+  const [newsBeat, setNewsBeat] = useState("All");
+  const [journalist, setJournalist] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [view, setView] = useState<"table" | "card">("table");
+  const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<"upload_date" | "title">("upload_date");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+
+  useEffect(() => {
+    if (statusParam) setStatus(statusParam);
+  }, [statusParam]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, assetType, status, newsBeat, journalist, dateFrom, dateTo, tag, sortBy, sortOrder]);
+
+  useEffect(() => {
+    const pref = localStorage.getItem("asset-view-pref");
+    if (pref === "card" || pref === "table") setView(pref);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const el = document.activeElement;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+      if (typing) return;
+      if (e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if ((e.key === "u" || e.key === "U") && can.upload(role)) {
+        navigate({ to: "/upload" });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [role, navigate]);
+
+  const setViewPref = (v: "table" | "card") => {
+    setView(v);
+    localStorage.setItem("asset-view-pref", v);
+  };
+
+  const toggleSort = (col: "upload_date" | "title") => {
+    if (sortBy === col) {
+      setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortOrder("desc");
+    }
+  };
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["assets", search, assetType, status, newsBeat, journalist, dateFrom, dateTo, tag, page, sortBy, sortOrder],
+    queryFn: () =>
+      fn({
+        data: {
+          search,
+          asset_type: assetType,
+          status,
+          news_beat: newsBeat,
+          journalist_name: journalist || undefined,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+          tag: tag || undefined,
+          page,
+          sortBy,
+          sortOrder,
+        },
+      }),
+  });
+
+  const pageSize = data?.pageSize ?? 24;
+  const total = data?.total ?? 0;
+  const noResults = !isLoading && (data?.assets.length ?? 0) === 0;
+
+  const selectCls = "rounded-md border border-input bg-background px-3 py-2 text-sm transition-colors focus:ring-2 focus:ring-ring";
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md">
+              <Images className="h-5 w-5" />
+            </div>
+            <h1 className="font-serif text-2xl font-bold text-foreground">Asset Library</h1>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {data?.total ?? "—"} assets · search, filter, and browse all media
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border border-input">
+            <button
+              onClick={() => setViewPref("table")}
+              className={`rounded-l-md p-2 transition-colors ${view === "table" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+            >
+              <LayoutList className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setViewPref("card")}
+              className={`rounded-r-md p-2 transition-colors ${view === "card" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </button>
+          </div>
+          {can.upload(role) && (
+            <Link to="/upload" className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:scale-[1.02] hover:bg-primary/90 active:scale-[0.98]">
+              <Upload className="h-4 w-4" /> Upload
+            </Link>
+          )}
+        </div>
+      </div>
+
+      {tag && (
+        <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-sm text-primary">
+          Filtering by tag: <span className="font-semibold">{tag}</span>
+          <button onClick={() => navigate({ search: {} })} className="ml-1 rounded-full p-0.5 hover:bg-primary/20">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      <div className="mb-2 flex gap-2">
+        {STATUSES.map((s) => (
+          <button
+            key={s}
+            onClick={() => setStatus(s)}
+            className={`rounded-full px-4 py-1.5 text-sm transition-colors ${
+              status === s
+                ? "bg-primary font-semibold text-primary-foreground"
+                : "bg-muted text-muted-foreground hover:bg-muted/80"
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+        <div className="relative md:col-span-2 lg:col-span-2">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            ref={searchRef}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search title, story, journalist…  (press /)"
+            className="w-full rounded-md border border-input bg-background py-2 pl-9 pr-3 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring"
+          />
+        </div>
+        <select value={assetType} onChange={(e) => setAssetType(e.target.value)} className={selectCls}>
+          {TYPES.map((t) => <option key={t}>{t}</option>)}
+        </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className={selectCls}>
+          {STATUSES.map((s) => <option key={s}>{s}</option>)}
+        </select>
+        <select value={newsBeat} onChange={(e) => setNewsBeat(e.target.value)} className={selectCls}>
+          {NEWS_BEATS.map((b) => <option key={b}>{b}</option>)}
+        </select>
+        <input
+          value={journalist}
+          onChange={(e) => setJournalist(e.target.value)}
+          placeholder="Journalist name…"
+          className={selectCls}
+        />
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={selectCls} aria-label="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className={selectCls} aria-label="To date" />
+      </div>
+
+      <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <span>Total: <span className="font-semibold text-foreground">{total}</span></span>
+        <span>·</span>
+        <span>Showing: <span className="font-semibold text-foreground">{data?.assets.length ?? 0}</span></span>
+        {tag && <><span>·</span><span>Tag: <span className="font-semibold text-primary">#{tag}</span></span></>}
+      </div>
+
+      {noResults ? (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-card py-16 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+            <Inbox className="h-8 w-8 text-primary" />
+          </div>
+          <h3 className="font-serif text-lg font-semibold text-foreground">No assets found</h3>
+          <p className="max-w-sm text-sm text-muted-foreground">
+            {search || assetType !== "All" || status !== "All"
+              ? "Try clearing some filters."
+              : "Upload your first asset to get started."}
+          </p>
+          {can.upload(role) && (
+            <Link to="/upload" className="mt-2 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all hover:bg-primary/90">
+              <Upload className="h-4 w-4" /> Upload Asset
+            </Link>
+          )}
+        </div>
+      ) : view === "table" ? (
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3">
+                  <button onClick={() => toggleSort("title")} className="inline-flex items-center gap-1 uppercase hover:text-foreground">
+                    Asset
+                    {sortBy === "title" && (sortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
+                  </button>
+                </th>
+                <th className="hidden px-4 py-3 md:table-cell">Type</th>
+                <th className="hidden px-4 py-3 lg:table-cell">News Beat</th>
+                <th className="hidden px-4 py-3 lg:table-cell">Journalist</th>
+                <th className="hidden px-4 py-3 md:table-cell">
+                  <button onClick={() => toggleSort("upload_date")} className="inline-flex items-center gap-1 uppercase hover:text-foreground">
+                    Upload Date
+                    {sortBy === "upload_date" && (sortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
+                  </button>
+                </th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading && (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">Loading…</td></tr>
+              )}
+              {data?.assets.map((a) => (
+                <tr key={a.id} className="cursor-pointer transition-all duration-150 even:bg-muted/20 hover:bg-primary/8 hover:shadow-sm">
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <Thumb url={a.thumbUrl} type={a.asset_type} />
+                      <div>
+                        <Link to="/assets/$assetId" params={{ assetId: a.id }} className="font-medium text-foreground hover:text-primary">
+                          {a.title}
+                        </Link>
+                        <p className="text-xs text-muted-foreground">{a.story_name}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="hidden px-4 py-3 md:table-cell"><TypeBadge type={a.asset_type} /></td>
+                  <td className="hidden px-4 py-3 lg:table-cell"><BeatBadge beat={a.news_beat} /></td>
+                  <td className="hidden px-4 py-3 lg:table-cell text-muted-foreground">{a.journalist_name}</td>
+                  <td className="hidden px-4 py-3 md:table-cell text-muted-foreground">{a.upload_date}</td>
+                  <td className="px-4 py-3"><StatusBadge status={a.status} /></td>
+                  <td className="px-4 py-3 text-right"><RowDownloadButton storagePath={a.storage_path} title={a.title} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+          {isLoading && <p className="col-span-full py-8 text-center text-sm text-muted-foreground">Loading…</p>}
+          {data?.assets.map((a) => (
+            <Link
+              key={a.id}
+              to="/assets/$assetId"
+              params={{ assetId: a.id }}
+              className="group overflow-hidden rounded-xl border border-border bg-card transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/10"
+            >
+              <div className="aspect-video overflow-hidden bg-muted">
+                <Thumb url={a.thumbUrl} type={a.asset_type} size="h-full w-full" />
+              </div>
+              <div className="space-y-2 p-3">
+                <p className="truncate font-medium text-foreground group-hover:text-primary">{a.title}</p>
+                <div className="flex flex-wrap gap-1">
+                  <TypeBadge type={a.asset_type} />
+                  <BeatBadge beat={a.news_beat} />
+                </div>
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span className="truncate">{a.journalist_name}</span>
+                  <StatusBadge status={a.status} />
+                </div>
+                <p className="text-xs text-muted-foreground">{a.upload_date}</p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {!noResults && total > pageSize && (
+        <div className="flex items-center justify-between pt-4 text-sm text-muted-foreground">
+          <span>
+            Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total} assets
+          </span>
+          <div className="flex items-center gap-2">
+            {page > 1 && (
+              <button onClick={() => setPage((p) => p - 1)} className="rounded-md border border-input px-3 py-1.5 text-foreground transition-colors hover:bg-muted">
+                ← Prev
+              </button>
+            )}
+            {page * pageSize < total && (
+              <button onClick={() => setPage((p) => p + 1)} className="rounded-md border border-input px-3 py-1.5 text-foreground transition-colors hover:bg-muted">
+                Next →
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="pointer-events-none fixed bottom-4 right-4 z-20 rounded-full border border-border bg-card/90 px-3 py-1.5 text-xs text-muted-foreground shadow-md backdrop-blur">
+        Press <kbd className="rounded bg-muted px-1 font-semibold text-foreground">/</kbd> to search
+      </div>
+    </div>
+  );
+}

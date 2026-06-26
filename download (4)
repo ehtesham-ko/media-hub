@@ -1,0 +1,130 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/lib/auth";
+import { toast } from "sonner";
+import { Film } from "lucide-react";
+
+export const Route = createFileRoute("/auth")({
+  head: () => ({
+    meta: [
+      { title: "Sign In | Namaste Telangana Asset Library" },
+      { name: "description", content: "Sign in to the Namaste Telangana multimedia content asset library." },
+    ],
+  }),
+  component: AuthPage,
+});
+
+function AuthPage() {
+  const navigate = useNavigate();
+  const { user, loading } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!loading && user) navigate({ to: "/" });
+  }, [loading, user, navigate]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setSubmitting(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Welcome back");
+    navigate({ to: "/" });
+  };
+
+  return (
+    <div className="grid min-h-screen lg:grid-cols-2">
+      {/* Left panel */}
+      <div
+        className="relative hidden flex-col justify-between overflow-hidden bg-sidebar p-12 text-sidebar-foreground lg:flex"
+        style={{ animation: "fadeInLeft 0.5s ease both" }}
+      >
+        <div
+          className="pointer-events-none absolute -right-24 -top-24 h-96 w-96 rounded-full bg-gradient-to-br from-primary to-accent opacity-40 blur-3xl"
+          style={{ animation: "float 3s ease-in-out infinite" }}
+        />
+        <div
+          className="pointer-events-none absolute -bottom-32 -left-20 h-80 w-80 rounded-full bg-gradient-to-tr from-accent to-primary opacity-25 blur-3xl"
+          style={{ animation: "float 3s ease-in-out infinite", animationDelay: "1.5s" }}
+        />
+        <div className="relative flex items-center gap-3">
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/20 text-primary" style={{ animation: "float 3s ease-in-out infinite" }}>
+            <Film className="h-7 w-7" />
+          </span>
+          <span className="font-serif text-2xl font-bold">నమస్తే తెలంగాణ</span>
+        </div>
+        <div className="relative">
+          <h2 className="font-serif text-4xl font-bold leading-tight">
+            Your multimedia stories,<br />organized.
+          </h2>
+          <p className="mt-4 max-w-sm text-sm text-sidebar-foreground/70">
+            A single home for every photo, video, and audio asset across the Namaste Telangana newsroom.
+          </p>
+        </div>
+        <p className="relative text-xs text-sidebar-foreground/50">© Namaste Telangana · Content Asset Library</p>
+      </div>
+
+      {/* Right panel */}
+      <div
+        className="flex items-center justify-center bg-background px-6 py-12"
+        style={{ animation: "fadeInRight 0.5s ease both", animationDelay: "0.1s" }}
+      >
+        <div className="w-full max-w-md">
+          <div className="mb-8 flex items-center gap-3 lg:hidden">
+            <Film className="h-8 w-8 text-primary" />
+            <div>
+              <h1 className="font-serif text-xl font-bold text-foreground">Namaste Telangana</h1>
+              <p className="text-sm text-muted-foreground">Content Asset Library</p>
+            </div>
+          </div>
+          <h1 className="font-serif text-2xl font-bold text-foreground">Welcome back</h1>
+          <p className="mt-1 mb-6 text-sm text-muted-foreground">Sign in to access your content library.</p>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-foreground">Email</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-all duration-200 focus:border-primary focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_20%,transparent)]"
+                placeholder="you@namastetelangana.com"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-foreground">Password</label>
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-all duration-200 focus:border-primary focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_20%,transparent)]"
+                placeholder="••••••••"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:brightness-110 disabled:opacity-60"
+            >
+              {submitting ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+          <div className="mt-6 rounded-xl bg-muted p-4 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">Demo accounts (password: Password123!)</p>
+            <p>admin@namastetelangana.com</p>
+            <p>journalist@namastetelangana.com</p>
+            <p>editor@namastetelangana.com</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

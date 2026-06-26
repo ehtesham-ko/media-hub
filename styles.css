@@ -1,0 +1,388 @@
+import { createFileRoute, useParams, Link } from "@tanstack/react-router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { useEffect, useState } from "react";
+import { getAsset, archiveAsset, updateAsset } from "@/lib/assets.functions";
+import { listAuditLogs } from "@/lib/audit.functions";
+import { StatusBadge, TypeBadge, BeatBadge } from "@/components/badges";
+import { useAuth } from "@/lib/auth";
+import { can, canEditAsset } from "@/lib/permissions";
+import { supabase } from "@/integrations/supabase/client";
+import { formatDistanceToNow } from "date-fns";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
+import { toast } from "sonner";
+import { ArrowLeft, Archive, FileQuestion, Download, Pencil, Loader2, History, Clock } from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/assets/$assetId")({
+  head: () => ({ meta: [{ title: "Asset Detail | Asset Library" }] }),
+  component: AssetDetail,
+});
+
+const NEWS_BEATS = ["Politics", "Sports", "Cinema", "Business", "Crime", "Health", "Education", "Technology", "Agriculture", "Culture"];
+
+function AssetDetail() {
+  const { assetId } = useParams({ from: "/_authenticated/assets/$assetId" });
+  const { role, user } = useAuth();
+  const getFn = useServerFn(getAsset);
+  const archiveFn = useServerFn(archiveAsset);
+  const updateFn = useServerFn(updateAsset);
+  const auditFn = useServerFn(listAuditLogs);
+  const qc = useQueryClient();
+  const [editOpen, setEditOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["asset", assetId],
+    queryFn: () => getFn({ data: { id: assetId } }),
+  });
+
+  const { data: history } = useQuery({
+    queryKey: ["assetHistory", assetId],
+    queryFn: () => auditFn({ data: { asset_id: assetId } }),
+  });
+
+  const archiveMut = useMutation({
+    mutationFn: () => archiveFn({ data: { id: assetId } }),
+    onSuccess: () => {
+      toast.success("Asset archived");
+      qc.invalidateQueries({ queryKey: ["asset", assetId] });
+      qc.invalidateQueries({ queryKey: ["assets"] });
+      qc.invalidateQueries({ queryKey: ["assetHistory", assetId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (!data?.asset) return <p className="text-sm text-muted-foreground">Asset not found.</p>;
+  const a = data.asset;
+  const url = data.signedUrl;
+  const editable = canEditAsset(role, user?.id ?? "", a.uploaded_by);
+
+  const handleDownload = async () => {
+    if (!a.storage_path) return;
+    setDownloading(true);
+    try {
+      const { data: file, error } = await supabase.storage.from("assets").download(a.storage_path);
+      if (error || !file) throw error ?? new Error("Download failed");
+      const ext = a.storage_path.split(".").pop();
+      const safe = a.title.replace(/[^a-z0-9-_ ]/gi, "_").trim() || "asset";
+      const blobUrl = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = ext && ext.length <= 5 ? `${safe}.${ext}` : safe;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+      toast.success("Download started");
+    } catch (err) {
+      toast.error((err as Error).message || "Download failed");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <Link to="/assets" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="h-4 w-4" /> Back to assets
+      </Link>
+
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="mb-2 h-1 w-16 rounded-full bg-gradient-to-r from-primary to-accent" />
+          <h1 className="font-serif text-2xl font-bold text-foreground">{a.title}</h1>
+          <div className="mt-2 flex items-center gap-2">
+            <TypeBadge type={a.asset_type} />
+            <BeatBadge beat={a.news_beat} />
+            <StatusBadge status={a.status} />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <button
+                    onClick={handleDownload}
+                    disabled={!a.storage_path || downloading}
+                    className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:scale-[1.02] hover:bg-primary/90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+                  >
+                    {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    Download
+                  </button>
+                </span>
+              </TooltipTrigger>
+              {!a.storage_path && <TooltipContent>No file attached</TooltipContent>}
+            </Tooltip>
+          </TooltipProvider>
+          {editable && (
+            <button
+              onClick={() => setEditOpen(true)}
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-200 hover:scale-[1.02] hover:bg-muted active:scale-[0.98]"
+            >
+              <Pencil className="h-4 w-4" /> Edit
+            </button>
+          )}
+          {can.archive(role) && a.status !== "Archived" && (
+            <button
+              onClick={() => archiveMut.mutate()}
+              disabled={archiveMut.isPending}
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+            >
+              <Archive className="h-4 w-4" /> Archive
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-border bg-slate-900">
+        {url && a.asset_type === "Photo" && <img src={url} alt={a.title} className="max-h-[520px] w-full object-contain" />}
+        {url && a.asset_type === "Graphic" && <img src={url} alt={a.title} className="max-h-[520px] w-full object-contain" />}
+        {url && a.asset_type === "Video" && <video src={url} controls className="max-h-[520px] w-full" style={{ background: "#000" }} />}
+        {url && a.asset_type === "Audio" && <div className="p-6"><audio src={url} controls className="w-full" /></div>}
+        {!url && (
+          <div className="flex flex-col items-center justify-center gap-2 py-16 text-slate-400">
+            <FileQuestion className="h-10 w-10" />
+            <p className="text-sm">No file preview available.</p>
+          </div>
+        )}
+      </div>
+
+      <div className="grid gap-4 overflow-hidden rounded-xl border border-border bg-card p-6 md:grid-cols-2 relative">
+        <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary via-accent to-transparent" />
+        <Field label="Story" value={a.story_name} />
+        <Field label="News Beat" value={a.news_beat} />
+        <Field label="Journalist" value={a.journalist_name} />
+        <Field label="Upload Date" value={a.upload_date} />
+        <div className="md:col-span-2">
+          <p className="text-xs uppercase text-muted-foreground">Description</p>
+          <p className="text-sm text-foreground">{a.description || "—"}</p>
+        </div>
+        <div className="md:col-span-2">
+          <p className="text-xs uppercase text-muted-foreground">Tags</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {(a.tags ?? []).length === 0 ? <span className="text-sm text-muted-foreground">—</span> : a.tags.map((t) => (
+              <Link key={t} to="/assets" search={{ tag: t }} className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20">
+                #{t}
+              </Link>
+            ))}
+          </div>
+        </div>
+        {a.notes && (
+          <div className="md:col-span-2">
+            <p className="text-xs uppercase text-muted-foreground">Notes</p>
+            <p className="text-sm text-foreground">{a.notes}</p>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-6">
+        <h2 className="mb-4 flex items-center gap-2 font-serif text-lg font-semibold text-foreground">
+          <History className="h-5 w-5 text-primary" /> History
+        </h2>
+        {(history?.logs.length ?? 0) === 0 ? (
+          <p className="text-sm text-muted-foreground">No history yet</p>
+        ) : (
+          <ol className="relative space-y-5 border-l border-border pl-6">
+            {history?.logs.map((log) => (
+              <li key={log.id} className="relative">
+                <span className="absolute -left-[1.65rem] top-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-primary ring-4 ring-card" />
+                <p className="text-sm font-medium text-foreground">{describeAction(log.action, log.details)}</p>
+                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground/80">{log.performer_name}</span>
+                  <span>·</span>
+                  <Clock className="h-3 w-3" />
+                  {formatDistanceToNow(new Date(log.timestamp), { addSuffix: true })}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
+      {editable && (
+        <EditSheet
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          asset={a}
+          onSave={async (patch) => {
+            await updateFn({ data: { id: assetId, ...patch } });
+            toast.success("Asset updated");
+            qc.invalidateQueries({ queryKey: ["asset", assetId] });
+            qc.invalidateQueries({ queryKey: ["assets"] });
+            setEditOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div>
+      <p className="text-xs uppercase text-muted-foreground">{label}</p>
+      <p className="text-sm font-medium text-foreground">{value || "—"}</p>
+    </div>
+  );
+}
+
+function describeAction(action: string, details: unknown): string {
+  const d = (details ?? {}) as Record<string, unknown>;
+  switch (action) {
+    case "CREATE":
+      return `Asset created${d.title ? ` — "${d.title}"` : ""}`;
+    case "UPDATE": {
+      const fields = Array.isArray(d.fields) ? (d.fields as string[]) : [];
+      return fields.length ? `Updated ${fields.join(", ")}` : "Asset updated";
+    }
+    case "ARCHIVE":
+      return "Status changed to Archived";
+    default:
+      return action;
+  }
+}
+
+type AssetRow = {
+  title: string;
+  description: string | null;
+  asset_type: string;
+  story_name: string;
+  news_beat: string;
+  journalist_name: string;
+  upload_date: string;
+  tags: string[] | null;
+  status: string;
+  notes: string | null;
+};
+
+function EditSheet({
+  open,
+  onOpenChange,
+  asset,
+  onSave,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  asset: AssetRow;
+  onSave: (patch: Record<string, unknown>) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    title: asset.title,
+    description: asset.description ?? "",
+    asset_type: asset.asset_type,
+    story_name: asset.story_name,
+    news_beat: asset.news_beat,
+    journalist_name: asset.journalist_name,
+    upload_date: asset.upload_date,
+    tags: (asset.tags ?? []).join(", "),
+    status: asset.status,
+    notes: asset.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setForm({
+        title: asset.title,
+        description: asset.description ?? "",
+        asset_type: asset.asset_type,
+        story_name: asset.story_name,
+        news_beat: asset.news_beat,
+        journalist_name: asset.journalist_name,
+        upload_date: asset.upload_date,
+        tags: (asset.tags ?? []).join(", "),
+        status: asset.status,
+        notes: asset.notes ?? "",
+      });
+    }
+  }, [open, asset]);
+
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const input = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring";
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await onSave({
+        title: form.title,
+        description: form.description || null,
+        asset_type: form.asset_type,
+        story_name: form.story_name,
+        news_beat: form.news_beat,
+        journalist_name: form.journalist_name,
+        upload_date: form.upload_date,
+        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
+        status: form.status,
+        notes: form.notes || null,
+      });
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>Edit Asset</SheetTitle>
+          <SheetDescription>Update the details for this asset.</SheetDescription>
+        </SheetHeader>
+        <form onSubmit={submit} className="mt-4 space-y-3">
+          <L label="Title"><input required className={input} value={form.title} onChange={(e) => set("title", e.target.value)} /></L>
+          <div className="grid grid-cols-2 gap-3">
+            <L label="Type">
+              <select className={input} value={form.asset_type} onChange={(e) => set("asset_type", e.target.value)}>
+                {["Photo", "Video", "Audio", "Graphic"].map((t) => <option key={t}>{t}</option>)}
+              </select>
+            </L>
+            <L label="Status">
+              <select className={input} value={form.status} onChange={(e) => set("status", e.target.value)}>
+                {["Draft", "Active", "Archived"].map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </L>
+            <L label="Story"><input className={input} value={form.story_name} onChange={(e) => set("story_name", e.target.value)} /></L>
+            <L label="News Beat">
+              <select className={input} value={form.news_beat} onChange={(e) => set("news_beat", e.target.value)}>
+                {NEWS_BEATS.map((b) => <option key={b}>{b}</option>)}
+              </select>
+            </L>
+            <L label="Journalist"><input className={input} value={form.journalist_name} onChange={(e) => set("journalist_name", e.target.value)} /></L>
+            <L label="Upload Date"><input type="date" className={input} value={form.upload_date} onChange={(e) => set("upload_date", e.target.value)} /></L>
+          </div>
+          <L label="Description"><textarea rows={3} className={input} value={form.description} onChange={(e) => set("description", e.target.value)} /></L>
+          <L label="Tags (comma separated)"><input className={input} value={form.tags} onChange={(e) => set("tags", e.target.value)} /></L>
+          <L label="Notes"><textarea rows={2} className={input} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></L>
+          <button type="submit" disabled={saving} className="w-full rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:bg-primary/90 disabled:opacity-60">
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function L({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium text-foreground">{label}</label>
+      {children}
+    </div>
+  );
+}
